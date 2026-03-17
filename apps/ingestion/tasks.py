@@ -1,4 +1,3 @@
-import base64
 import csv
 import io
 import logging
@@ -86,62 +85,12 @@ def _embed_text(text: str) -> list[float]:
     return data["embeddings"][0]
 
 
-_IMAGE_PATTERN = re.compile(r"!\[(?:[^\]]*)\]\(data:image/([^;]+);base64,([A-Za-z0-9+/=]+)\)")
+_IMAGE_PATTERN = re.compile(r"!\[(?:[^\]]*)\]\(data:image/[^)]+\)")
 
 
-def _describe_image(image_data_b64: str, mime_type: str) -> str:
-    """Dùng GPT-4o vision để mô tả nội dung ảnh (logo, biểu đồ, v.v.)."""
-    from django.conf import settings as _s
-
-    resp = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {_s.OPENAI_API_KEY}"},
-        json={
-            "model": "gpt-4o-mini",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/{mime_type};base64,{image_data_b64}",
-                                "detail": "low",
-                            },
-                        },
-                        {
-                            "type": "text",
-                            "text": (
-                                "Mô tả ngắn gọn nội dung ảnh này bằng tiếng Việt. "
-                                "Nếu là logo/thương hiệu, hãy đọc tên chữ trong đó. "
-                                "Chỉ trả về mô tả, không giải thích thêm."
-                            ),
-                        },
-                    ],
-                }
-            ],
-            "max_tokens": 100,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
-
-
-def _replace_images_with_descriptions(markdown_text: str) -> str:
-    """Thay thế các ảnh base64 trong markdown bằng mô tả văn bản từ GPT-4o vision."""
-    def replace_match(m: re.Match) -> str:
-        mime_type = m.group(1)
-        b64_data = m.group(2)
-        try:
-            description = _describe_image(b64_data, mime_type)
-            logger.info("Image described: %s", description[:80])
-            return f"[Hình ảnh: {description}]"
-        except Exception as exc:
-            logger.warning("Failed to describe image: %s", exc)
-            return "[Hình ảnh]"
-
-    return _IMAGE_PATTERN.sub(replace_match, markdown_text)
+def _strip_embedded_images(markdown_text: str) -> str:
+    """Xóa các ảnh base64 inline khỏi markdown để tránh làm nặng embedding."""
+    return _IMAGE_PATTERN.sub("", markdown_text)
 
 
 def _classify_doc_type(text: str, filename: str) -> str:
@@ -271,10 +220,8 @@ def process_document(self, job_id: str, document_id: str):
 
             logger.info("Parsed %d chars of text", len(markdown_text))
 
-            # Describe embedded images (logos, diagrams) via GPT-4o vision
-            if _IMAGE_PATTERN.search(markdown_text):
-                logger.info("Found embedded images — describing via vision model")
-                markdown_text = _replace_images_with_descriptions(markdown_text)
+            # Strip inline base64 images (không embed vào chunk)
+            markdown_text = _strip_embedded_images(markdown_text)
 
         # ── Step 5: Auto-classify doc_type nếu chưa có ───────────────────
         if not doc.doc_type:

@@ -175,10 +175,8 @@ async def rerank_node(state: AgentState) -> AgentState:
     question = state["rewritten_question"] or state["original_question"]
     logger.debug("rerank_node: reranking %d docs", len(docs))
 
-    scored = []
-    for doc in docs:
-        score = await _rerank_score(question, doc["text"])
-        scored.append({**doc, "rerank_score": score})
+    scores = await asyncio.gather(*[_rerank_score(question, doc["text"]) for doc in docs])
+    scored = [{**doc, "rerank_score": score} for doc, score in zip(docs, scores)]
 
     scored.sort(key=lambda x: x["rerank_score"], reverse=True)
     reranked = scored[:TOP_K_RERANK]
